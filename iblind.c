@@ -1,4 +1,3 @@
-
 /*
     Particle is a super simple screen magnifier for x11
 */
@@ -8,6 +7,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
@@ -50,6 +50,8 @@ bool shifted = false;
 Window target;
 
 uint8_t *image_data = NULL;
+uint32_t *map_src_word_x = NULL;
+uint32_t *map_src_word_y = NULL;
 
 void update_zoom_dims(void) {
     if (ratio < 1) ratio = 1;
@@ -57,6 +59,24 @@ void update_zoom_dims(void) {
     capture_height = (box_height + ratio - 1) / ratio;
     half_capture_width = capture_width / 2;
     half_capture_height = capture_height / 2;
+
+    free(map_src_word_x);
+    free(map_src_word_y);
+
+    map_src_word_x = malloc(box_width * sizeof(uint32_t));
+    map_src_word_y = malloc(box_height * sizeof(uint32_t));
+
+    for (int dx = 0; dx < box_width; dx++) {
+        int sx = dx / ratio;
+        if (sx >= capture_width) sx = capture_width - 1;
+        map_src_word_x[dx] = sx;
+    }
+
+    for (int dy = 0; dy < box_height; dy++) {
+        int sy = dy / ratio;
+        if (sy >= capture_height) sy = capture_height - 1;
+        map_src_word_y[dy] = sy * capture_width;
+    }
 }
 
 void grab_key(Display *dpy, Window root, KeySym keysym) {
@@ -93,19 +113,14 @@ void do_image(void) {
 
     if (!img) return;
 
+    uint32_t *dest32 = (uint32_t *)image_data;
+    uint32_t *src32 = (uint32_t *)img->data;
+
     for (int dy = 0; dy < box_height; dy++) {
-        int sy = dy / ratio;
-        if (sy >= capture_height) sy = capture_height - 1;
+        uint32_t src_row = map_src_word_y[dy];
+        uint32_t dest_row = dy * box_width;
         for (int dx = 0; dx < box_width; dx++) {
-            int sx = dx / ratio;
-            if (sx >= capture_width) sx = capture_width - 1;
-
-            uint32_t dest_idx = (dy * box_width + dx) * 4;
-            uint32_t src_idx = (sy * capture_width + sx) * 4;
-
-            image_data[dest_idx + 0] = img->data[src_idx + 0];
-            image_data[dest_idx + 1] = img->data[src_idx + 1];
-            image_data[dest_idx + 2] = img->data[src_idx + 2];
+            dest32[dest_row + dx] = src32[src_row + map_src_word_x[dx]];
         }
     }
 
@@ -200,12 +215,16 @@ int main(int argc, char **argv) {
     image_data = malloc(box_width * box_height * 4);
     if (!image_data) {
         fprintf(stderr, "Error: failed to allocate memory for image data\n");
+        free(map_src_word_x);
+        free(map_src_word_y);
         return -1;
     }
 
     if ((dpy = XOpenDisplay(NULL)) == NULL) {
         fprintf(stderr, "Error: can't open display :(\n");
         free(image_data);
+        free(map_src_word_x);
+        free(map_src_word_y);
         return -1;
     }
 
@@ -309,15 +328,17 @@ int main(int argc, char **argv) {
             &ev
         );
 
-        if (n > 20000) {
-            n = 0;
-            do_image();
-        }
-
         if (!found) {
+            usleep(10000); // yield CPU for 10ms
             n++;
+            if (n > 3) { // ~30ms periodic refresh
+                n = 0;
+                do_image();
+            }
             continue;
         }
+
+        n = 0; // reset refresh timer
 
         if (ev.type == KeyPress) {
             KeySym keysym = XLookupKeysym(&ev.xkey, 0);
@@ -441,7 +462,8 @@ int main(int argc, char **argv) {
     XDestroyWindow(dpy, win);
     XCloseDisplay(dpy);
     free(image_data);
+    free(map_src_word_x);
+    free(map_src_word_y);
 
     return 0;
 }
-
