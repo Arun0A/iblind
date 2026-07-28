@@ -28,7 +28,8 @@ GC gc;
 int x = 0;
 int y = 0;
 
-#define padding 2
+int padding_val = 2;
+unsigned long border_color = 0xDB6A0B;
 
 int box_width = 512;
 int box_height = 512;
@@ -129,7 +130,7 @@ void do_image(void) {
         (char *)image_data, box_width, box_height, 32, 0
     );
 
-    XPutImage(dpy, win, gc, img_2, 0, 0, padding, padding, box_width, box_height);
+    XPutImage(dpy, win, gc, img_2, 0, 0, padding_val, padding_val, box_width, box_height);
 
     XDestroyImage(img);
     img_2->data = NULL;
@@ -180,6 +181,15 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "Error: %s requires an argument\n", argv[i]);
                 return -1;
             }
+        } else if (strcmp(argv[i], "-c") == 0 || strcmp(argv[i], "--color") == 0) {
+            if (i + 1 < argc) {
+                border_color = strtoul(argv[++i], NULL, 16);
+            } else {
+                fprintf(stderr, "Error: %s requires an argument\n", argv[i]);
+                return -1;
+            }
+        } else if (strcmp(argv[i], "-b") == 0 || strcmp(argv[i], "--no-border") == 0) {
+            padding_val = 0;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-?") == 0) {
             printf("Usage: particle [options]\n");
             printf("Options:\n");
@@ -188,6 +198,8 @@ int main(int argc, char **argv) {
             printf("  -x, --xpos <val>    Initial X position of the window\n");
             printf("  -y, --ypos <val>    Initial Y position of the window\n");
             printf("  -z, --zoom <val>    Default zoom level (default: 4)\n");
+            printf("  -c, --color <hex>   Border color in hex (default: 0xDB6A0B)\n");
+            printf("  -b, --no-border     Disable borders completely\n");
             printf("  --help              Show this help message\n");
             return 0;
         } else {
@@ -207,8 +219,8 @@ int main(int argc, char **argv) {
     if (max_zoom < 1) max_zoom = 1;
     if (ratio > max_zoom) ratio = max_zoom;
 
-    win_width = box_width + padding * 2;
-    win_height = box_height + padding * 2;
+    win_width = box_width + padding_val * 2;
+    win_height = box_height + padding_val * 2;
 
     update_zoom_dims();
 
@@ -255,7 +267,7 @@ int main(int argc, char **argv) {
         dpy, root,
         base_x, base_y,
         win_width, win_height,
-        0, 0, 0xDB6A0B
+        0, 0, border_color
     );
 
     gc = XCreateGC(dpy, win, 0, NULL);
