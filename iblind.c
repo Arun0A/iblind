@@ -30,13 +30,14 @@ int y = 0;
 
 int padding_val = 2;
 unsigned long border_color = 0xDB6A0B;
+bool persist_mode = false;
 
 int box_width = 512;
 int box_height = 512;
 int win_width;
 int win_height;
 
-int ratio = 4;
+float ratio = 4.0f;
 int capture_width;
 int capture_height;
 int half_capture_width;
@@ -55,9 +56,12 @@ uint32_t *map_src_word_x = NULL;
 uint32_t *map_src_word_y = NULL;
 
 void update_zoom_dims(void) {
-    if (ratio < 1) ratio = 1;
-    capture_width = (box_width + ratio - 1) / ratio;
-    capture_height = (box_height + ratio - 1) / ratio;
+    if (ratio < 1.0f) ratio = 1.0f;
+    capture_width = (int)(box_width / ratio);
+    if (capture_width < 4) capture_width = 4;
+    capture_height = (int)(box_height / ratio);
+    if (capture_height < 4) capture_height = 4;
+
     half_capture_width = capture_width / 2;
     half_capture_height = capture_height / 2;
 
@@ -68,13 +72,13 @@ void update_zoom_dims(void) {
     map_src_word_y = malloc(box_height * sizeof(uint32_t));
 
     for (int dx = 0; dx < box_width; dx++) {
-        int sx = dx / ratio;
+        int sx = (int)(dx / ratio);
         if (sx >= capture_width) sx = capture_width - 1;
         map_src_word_x[dx] = sx;
     }
 
     for (int dy = 0; dy < box_height; dy++) {
-        int sy = dy / ratio;
+        int sy = (int)(dy / ratio);
         if (sy >= capture_height) sy = capture_height - 1;
         map_src_word_y[dy] = sy * capture_width;
     }
@@ -90,7 +94,63 @@ void grab_key(Display *dpy, Window root, KeySym keysym) {
     }
 }
 
+void grab_key_mod(Display *dpy, Window root, KeySym keysym, unsigned int modifiers) {
+    KeyCode code = XKeysymToKeycode(dpy, keysym);
+    if (code) {
+        XGrabKey(dpy, code, modifiers, root, true, GrabModeAsync, GrabModeAsync);
+        XGrabKey(dpy, code, modifiers | LockMask, root, true, GrabModeAsync, GrabModeAsync);
+        XGrabKey(dpy, code, modifiers | Mod2Mask, root, true, GrabModeAsync, GrabModeAsync);
+        XGrabKey(dpy, code, modifiers | Mod2Mask | LockMask, root, true, GrabModeAsync, GrabModeAsync);
+    }
+}
+
+void set_always_on_top(Display *dpy, Window win) {
+    Atom wm_state = XInternAtom(dpy, "_NET_WM_STATE", False);
+    Atom wm_above = XInternAtom(dpy, "_NET_WM_STATE_ABOVE", False);
+
+    XClientMessageEvent xev;
+    memset(&xev, 0, sizeof(xev));
+    xev.type = ClientMessage;
+    xev.window = win;
+    xev.message_type = wm_state;
+    xev.format = 32;
+    xev.data.l[0] = 1; // _NET_WM_STATE_ADD
+    xev.data.l[1] = (long)wm_above;
+    xev.data.l[2] = 0;
+    xev.data.l[3] = 0;
+    xev.data.l[4] = 0;
+
+    XSendEvent(dpy, DefaultRootWindow(dpy), False,
+               SubstructureRedirectMask | SubstructureNotifyMask,
+               (XEvent *)&xev);
+}
+
 void do_image(void) {
+    // In persist mode, we don't get global mouse events so we query the mouse coordinates
+    if (persist_mode) {
+        Window g;
+        int i;
+        uint32_t m = 0;
+        XQueryPointer(
+            dpy, root, &g, &target,
+            &x, &y, &i, &i, &m
+        );
+
+        bool mouse_in_original = (x >= base_x && x < base_x + win_width &&
+                                   y >= base_y && y < base_y + win_height);
+        if (mouse_in_original) {
+            if (!shifted) {
+                shifted = true;
+                XMoveWindow(dpy, win, opposite_x, opposite_y);
+            }
+        } else {
+            if (shifted) {
+                shifted = false;
+                XMoveWindow(dpy, win, base_x, base_y);
+            }
+        }
+    }
+
     int lx = x - half_capture_width;
     int ly = y - half_capture_height;
 
@@ -176,7 +236,7 @@ int main(int argc, char **argv) {
             }
         } else if (strcmp(argv[i], "-z") == 0 || strcmp(argv[i], "--zoom") == 0) {
             if (i + 1 < argc) {
-                ratio = atoi(argv[++i]);
+                ratio = atof(argv[++i]);
             } else {
                 fprintf(stderr, "Error: %s requires an argument\n", argv[i]);
                 return -1;
@@ -190,6 +250,8 @@ int main(int argc, char **argv) {
             }
         } else if (strcmp(argv[i], "-b") == 0 || strcmp(argv[i], "--no-border") == 0) {
             padding_val = 0;
+        } else if (strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--persist") == 0) {
+            persist_mode = true;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-?") == 0) {
             printf("Usage: particle [options]\n");
             printf("Options:\n");
@@ -197,9 +259,10 @@ int main(int argc, char **argv) {
             printf("  -h, --height <val>  Height of the magnifier box (default: 512)\n");
             printf("  -x, --xpos <val>    Initial X position of the window\n");
             printf("  -y, --ypos <val>    Initial Y position of the window\n");
-            printf("  -z, --zoom <val>    Default zoom level (default: 4)\n");
+            printf("  -z, --zoom <val>    Default zoom level (default: 4.0)\n");
             printf("  -c, --color <hex>   Border color in hex (default: 0xDB6A0B)\n");
             printf("  -b, --no-border     Disable borders completely\n");
+            printf("  -p, --persist       Persist through clicks (always-on-top, click-through)\n");
             printf("  --help              Show this help message\n");
             return 0;
         } else {
@@ -211,7 +274,7 @@ int main(int argc, char **argv) {
 
     if (box_width < 16) box_width = 16;
     if (box_height < 16) box_height = 16;
-    if (ratio < 1) ratio = 1;
+    if (ratio < 1.0f) ratio = 1.0f;
 
     int max_zoom_w = box_width / 4;
     int max_zoom_h = box_height / 4;
@@ -301,33 +364,49 @@ int main(int argc, char **argv) {
 
     Cursor c = XCreateFontCursor(dpy, 2);
 
-    XGrabPointer(
-        dpy, root, true,
-        PointerMotionMask | ButtonPressMask,
-        GrabModeAsync, GrabModeAsync, None,
-        c, CurrentTime
-    );
+    if (persist_mode) {
+        set_always_on_top(dpy, win);
+    } else {
+        XGrabPointer(
+            dpy, root, true,
+            PointerMotionMask | ButtonPressMask,
+            GrabModeAsync, GrabModeAsync, None,
+            c, CurrentTime
+        );
+    }
 
-    grab_key(dpy, root, XK_q);
-    grab_key(dpy, root, XK_Q);
-    grab_key(dpy, root, XK_Escape);
-    grab_key(dpy, root, XK_w);
-    grab_key(dpy, root, XK_W);
-    grab_key(dpy, root, XK_a);
-    grab_key(dpy, root, XK_A);
-    grab_key(dpy, root, XK_s);
-    grab_key(dpy, root, XK_S);
-    grab_key(dpy, root, XK_d);
-    grab_key(dpy, root, XK_D);
-    grab_key(dpy, root, XK_Up);
-    grab_key(dpy, root, XK_Down);
-    grab_key(dpy, root, XK_Left);
-    grab_key(dpy, root, XK_Right);
-    grab_key(dpy, root, XK_plus);
-    grab_key(dpy, root, XK_minus);
-    grab_key(dpy, root, XK_equal);
-    grab_key(dpy, root, XK_KP_Add);
-    grab_key(dpy, root, XK_KP_Subtract);
+    if (persist_mode) {
+        // In persist mode, globally grab Alt + keys
+        grab_key_mod(dpy, root, XK_q, Mod1Mask);
+        grab_key_mod(dpy, root, XK_Q, Mod1Mask);
+        grab_key_mod(dpy, root, XK_Escape, Mod1Mask);
+        grab_key_mod(dpy, root, XK_plus, Mod1Mask);
+        grab_key_mod(dpy, root, XK_minus, Mod1Mask);
+        grab_key_mod(dpy, root, XK_equal, Mod1Mask);
+        grab_key_mod(dpy, root, XK_KP_Add, Mod1Mask);
+        grab_key_mod(dpy, root, XK_KP_Subtract, Mod1Mask);
+    } else {
+        grab_key(dpy, root, XK_q);
+        grab_key(dpy, root, XK_Q);
+        grab_key(dpy, root, XK_Escape);
+        grab_key(dpy, root, XK_w);
+        grab_key(dpy, root, XK_W);
+        grab_key(dpy, root, XK_a);
+        grab_key(dpy, root, XK_A);
+        grab_key(dpy, root, XK_s);
+        grab_key(dpy, root, XK_S);
+        grab_key(dpy, root, XK_d);
+        grab_key(dpy, root, XK_D);
+        grab_key(dpy, root, XK_Up);
+        grab_key(dpy, root, XK_Down);
+        grab_key(dpy, root, XK_Left);
+        grab_key(dpy, root, XK_Right);
+        grab_key(dpy, root, XK_plus);
+        grab_key(dpy, root, XK_minus);
+        grab_key(dpy, root, XK_equal);
+        grab_key(dpy, root, XK_KP_Add);
+        grab_key(dpy, root, XK_KP_Subtract);
+    }
 
     uint32_t n = 0;
     XEvent ev;
@@ -354,6 +433,14 @@ int main(int argc, char **argv) {
 
         if (ev.type == KeyPress) {
             KeySym keysym = XLookupKeysym(&ev.xkey, 0);
+            unsigned int state = ev.xkey.state;
+            state &= ~(LockMask | Mod2Mask);
+            bool alt_pressed = (state & Mod1Mask) != 0;
+
+            if (persist_mode && !alt_pressed) {
+                continue;
+            }
+
             switch (keysym) {
                 case XK_q:
                 case XK_Q:
@@ -364,36 +451,44 @@ int main(int argc, char **argv) {
                 case XK_d:
                 case XK_D:
                 case XK_Right:
-                    x++;
-                    do_image();
+                    if (!persist_mode) {
+                        x++;
+                        do_image();
+                    }
                     break;
 
                 case XK_a:
                 case XK_A:
                 case XK_Left:
-                    x--;
-                    do_image();
+                    if (!persist_mode) {
+                        x--;
+                        do_image();
+                    }
                     break;
 
                 case XK_w:
                 case XK_W:
                 case XK_Up:
-                    y--;
-                    do_image();
+                    if (!persist_mode) {
+                        y--;
+                        do_image();
+                    }
                     break;
 
                 case XK_s:
                 case XK_S:
                 case XK_Down:
-                    y++;
-                    do_image();
+                    if (!persist_mode) {
+                        y++;
+                        do_image();
+                    }
                     break;
 
                 case XK_plus:
                 case XK_equal:
                 case XK_KP_Add:
-                    if ((box_width / (ratio + 1)) >= 4 && (box_height / (ratio + 1)) >= 4) {
-                        ratio++;
+                    if ((box_width / (ratio + 0.25f)) >= 4 && (box_height / (ratio + 0.25f)) >= 4) {
+                        ratio += 0.25f;
                         update_zoom_dims();
                         do_image();
                     }
@@ -401,8 +496,9 @@ int main(int argc, char **argv) {
 
                 case XK_minus:
                 case XK_KP_Subtract:
-                    if (ratio > 1) {
-                        ratio--;
+                    if (ratio > 1.0f) {
+                        ratio -= 0.25f;
+                        if (ratio < 1.0f) ratio = 1.0f;
                         update_zoom_dims();
                         do_image();
                     }
@@ -434,14 +530,14 @@ int main(int argc, char **argv) {
             y = ev.xmotion.y_root;
 
             if (ev.xbutton.button == 4) {
-                if ((box_width / (ratio * 2)) >= 4 && (box_height / (ratio * 2)) >= 4) {
-                    ratio *= 2;
+                if ((box_width / (ratio * 1.5f)) >= 4 && (box_height / (ratio * 1.5f)) >= 4) {
+                    ratio *= 1.5f;
                     update_zoom_dims();
                     do_image();
                 }
             } else if (ev.xbutton.button == 5) {
-                if (ratio >= 2) {
-                    ratio /= 2;
+                if (ratio >= 1.5f) {
+                    ratio /= 1.5f;
                     update_zoom_dims();
                     do_image();
                 }
@@ -466,7 +562,9 @@ int main(int argc, char **argv) {
                 shifted = false;
                 XMoveWindow(dpy, win, base_x, base_y);
             } else {
-                running = false;
+                if (!persist_mode) {
+                    running = false;
+                }
             }
         }
     }
