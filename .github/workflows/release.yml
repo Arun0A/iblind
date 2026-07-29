@@ -17,23 +17,36 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install dependencies (x86_64)
         run: |
           sudo apt-get update
           sudo apt-get install -y libx11-dev gcc make
 
-      - name: Build binary
+      - name: Build x86_64 binary
         run: |
+          make clean
           make
-
-      - name: Prepare binary asset
-        run: |
           mkdir -p dist
           mv bin/iblind dist/iblind-linux-x86_64
+
+      - name: Build ARM64 binary on QEMU
+        uses: uraimo/run-on-arch-action@v2
+        with:
+          arch: aarch64
+          distro: ubuntu22.04
+          install: |
+            apt-get update
+            apt-get install -y libx11-dev gcc make
+          run: |
+            make clean
+            make
+            mv bin/iblind dist/iblind-linux-aarch64
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/iblind-linux-x86_64
+          files: |
+            dist/iblind-linux-x86_64
+            dist/iblind-linux-aarch64
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
