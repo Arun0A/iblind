@@ -19,7 +19,7 @@ int y = 0;
 int padding_val = 2;
 int margin_val = 5;
 unsigned long border_color = 0x9C9C9C;
-bool persist_mode = false;
+bool persist_mode = true;
 
 int box_width = 800;
 int box_height = 450;
