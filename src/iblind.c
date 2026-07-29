@@ -1,5 +1,5 @@
 /*
-    Particle is a super simple screen magnifier for x11
+    iblind: A customizable screen magnifier for X11
 */
 
 #include <stdio.h>
@@ -13,189 +13,9 @@
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
 
-bool running = true;
-
-int screen;
-int dpy_width;
-int dpy_height;
-Visual *visual;
-int depth;
-Window win;
-Window root;
-Display *dpy;
-GC gc;
-
-int x = 0;
-int y = 0;
-
-int padding_val = 2;
-unsigned long border_color = 0xDB6A0B;
-bool persist_mode = false;
-
-int box_width = 512;
-int box_height = 512;
-int win_width;
-int win_height;
-
-float ratio = 4.0f;
-int capture_width;
-int capture_height;
-int half_capture_width;
-int half_capture_height;
-
-int base_x;
-int base_y;
-int opposite_x;
-int opposite_y;
-bool shifted = false;
-
-Window target;
-
-uint8_t *image_data = NULL;
-uint32_t *map_src_word_x = NULL;
-uint32_t *map_src_word_y = NULL;
-
-void update_zoom_dims(void) {
-    if (ratio < 1.0f) ratio = 1.0f;
-    capture_width = (int)(box_width / ratio);
-    if (capture_width < 4) capture_width = 4;
-    capture_height = (int)(box_height / ratio);
-    if (capture_height < 4) capture_height = 4;
-
-    half_capture_width = capture_width / 2;
-    half_capture_height = capture_height / 2;
-
-    free(map_src_word_x);
-    free(map_src_word_y);
-
-    map_src_word_x = malloc(box_width * sizeof(uint32_t));
-    map_src_word_y = malloc(box_height * sizeof(uint32_t));
-
-    for (int dx = 0; dx < box_width; dx++) {
-        int sx = (int)(dx / ratio);
-        if (sx >= capture_width) sx = capture_width - 1;
-        map_src_word_x[dx] = sx;
-    }
-
-    for (int dy = 0; dy < box_height; dy++) {
-        int sy = (int)(dy / ratio);
-        if (sy >= capture_height) sy = capture_height - 1;
-        map_src_word_y[dy] = sy * capture_width;
-    }
-}
-
-void grab_key(Display *dpy, Window root, KeySym keysym) {
-    KeyCode code = XKeysymToKeycode(dpy, keysym);
-    if (code) {
-        XGrabKey(dpy, code, 0, root, true, GrabModeAsync, GrabModeAsync);
-        XGrabKey(dpy, code, ShiftMask, root, true, GrabModeAsync, GrabModeAsync);
-        XGrabKey(dpy, code, LockMask, root, true, GrabModeAsync, GrabModeAsync);
-        XGrabKey(dpy, code, ShiftMask | LockMask, root, true, GrabModeAsync, GrabModeAsync);
-    }
-}
-
-void grab_key_mod(Display *dpy, Window root, KeySym keysym, unsigned int modifiers) {
-    KeyCode code = XKeysymToKeycode(dpy, keysym);
-    if (code) {
-        XGrabKey(dpy, code, modifiers, root, true, GrabModeAsync, GrabModeAsync);
-        XGrabKey(dpy, code, modifiers | LockMask, root, true, GrabModeAsync, GrabModeAsync);
-        XGrabKey(dpy, code, modifiers | Mod2Mask, root, true, GrabModeAsync, GrabModeAsync);
-        XGrabKey(dpy, code, modifiers | Mod2Mask | LockMask, root, true, GrabModeAsync, GrabModeAsync);
-    }
-}
-
-void set_always_on_top(Display *dpy, Window win) {
-    Atom wm_state = XInternAtom(dpy, "_NET_WM_STATE", False);
-    Atom wm_above = XInternAtom(dpy, "_NET_WM_STATE_ABOVE", False);
-
-    XClientMessageEvent xev;
-    memset(&xev, 0, sizeof(xev));
-    xev.type = ClientMessage;
-    xev.window = win;
-    xev.message_type = wm_state;
-    xev.format = 32;
-    xev.data.l[0] = 1; // _NET_WM_STATE_ADD
-    xev.data.l[1] = (long)wm_above;
-    xev.data.l[2] = 0;
-    xev.data.l[3] = 0;
-    xev.data.l[4] = 0;
-
-    XSendEvent(dpy, DefaultRootWindow(dpy), False,
-               SubstructureRedirectMask | SubstructureNotifyMask,
-               (XEvent *)&xev);
-}
-
-void do_image(void) {
-    // In persist mode, we don't get global mouse events so we query the mouse coordinates
-    if (persist_mode) {
-        Window g;
-        int i;
-        uint32_t m = 0;
-        XQueryPointer(
-            dpy, root, &g, &target,
-            &x, &y, &i, &i, &m
-        );
-
-        bool mouse_in_original = (x >= base_x && x < base_x + win_width &&
-                                   y >= base_y && y < base_y + win_height);
-        if (mouse_in_original) {
-            if (!shifted) {
-                shifted = true;
-                XMoveWindow(dpy, win, opposite_x, opposite_y);
-            }
-        } else {
-            if (shifted) {
-                shifted = false;
-                XMoveWindow(dpy, win, base_x, base_y);
-            }
-        }
-    }
-
-    int lx = x - half_capture_width;
-    int ly = y - half_capture_height;
-
-    if (lx < 0) lx = 0;
-    if (ly < 0) ly = 0;
-
-    if (lx + capture_width > dpy_width) {
-        lx = dpy_width - capture_width;
-    }
-    if (ly + capture_height > dpy_height) {
-        ly = dpy_height - capture_height;
-    }
-    if (lx < 0) lx = 0;
-    if (ly < 0) ly = 0;
-
-    XImage *img = XGetImage(
-        dpy, root,
-        lx, ly, capture_width, capture_height,
-        AllPlanes, ZPixmap
-    );
-
-    if (!img) return;
-
-    uint32_t *dest32 = (uint32_t *)image_data;
-    uint32_t *src32 = (uint32_t *)img->data;
-
-    for (int dy = 0; dy < box_height; dy++) {
-        uint32_t src_row = map_src_word_y[dy];
-        uint32_t dest_row = dy * box_width;
-        for (int dx = 0; dx < box_width; dx++) {
-            dest32[dest_row + dx] = src32[src_row + map_src_word_x[dx]];
-        }
-    }
-
-    XImage *img_2 = XCreateImage(
-        dpy, visual, depth, ZPixmap, 0,
-        (char *)image_data, box_width, box_height, 32, 0
-    );
-
-    XPutImage(dpy, win, gc, img_2, 0, 0, padding_val, padding_val, box_width, box_height);
-
-    XDestroyImage(img);
-    img_2->data = NULL;
-    XDestroyImage(img_2);
-}
+#include "globals.h"
+#include "x11.h"
+#include "magnifier.h"
 
 int main(int argc, char **argv) {
     int init_x = 0;
@@ -252,17 +72,20 @@ int main(int argc, char **argv) {
             padding_val = 0;
         } else if (strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--persist") == 0) {
             persist_mode = true;
+        } else if (strcmp(argv[i], "-g") == 0 || strcmp(argv[i], "--grab") == 0) {
+            persist_mode = false;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-?") == 0) {
-            printf("Usage: particle [options]\n");
+            printf("Usage: iblind [options]\n");
             printf("Options:\n");
-            printf("  -w, --width <val>   Width of the magnifier box (default: 512)\n");
-            printf("  -h, --height <val>  Height of the magnifier box (default: 512)\n");
+            printf("  -w, --width <val>   Width of the magnifier box (default: 800)\n");
+            printf("  -h, --height <val>  Height of the magnifier box (default: 450)\n");
             printf("  -x, --xpos <val>    Initial X position of the window\n");
             printf("  -y, --ypos <val>    Initial Y position of the window\n");
-            printf("  -z, --zoom <val>    Default zoom level (default: 4.0)\n");
-            printf("  -c, --color <hex>   Border color in hex (default: 0xDB6A0B)\n");
+            printf("  -z, --zoom <val>    Default zoom level (default: 2.0)\n");
+            printf("  -c, --color <hex>   Border color in hex (default: 9C9C9C)\n");
             printf("  -b, --no-border     Disable borders completely\n");
-            printf("  -p, --persist       Persist through clicks (always-on-top, click-through)\n");
+            printf("  -p, --persist       Persist through clicks (default: enabled)\n");
+            printf("  -g, --grab          Enable grab mode (modal, exit on click)\n");
             printf("  --help              Show this help message\n");
             return 0;
         } else {
@@ -310,21 +133,21 @@ int main(int argc, char **argv) {
     depth = DefaultDepth(dpy, screen);
     root = DefaultRootWindow(dpy);
 
-    base_x = has_init_x ? init_x : (dpy_width - (win_width + 10));
-    base_y = has_init_y ? init_y : (dpy_height - (win_height + 10));
+    base_x = has_init_x ? init_x : (dpy_width - (win_width + margin_val));
+    base_y = has_init_y ? init_y : (dpy_height - (win_height + margin_val));
 
-    if (base_x < 10) base_x = 10;
-    if (base_y < 10) base_y = 10;
-    if (base_x > dpy_width - win_width - 10) base_x = dpy_width - win_width - 10;
-    if (base_y > dpy_height - win_height - 10) base_y = dpy_height - win_height - 10;
+    if (base_x < margin_val) base_x = margin_val;
+    if (base_y < margin_val) base_y = margin_val;
+    if (base_x > dpy_width - win_width - margin_val) base_x = dpy_width - win_width - margin_val;
+    if (base_y > dpy_height - win_height - margin_val) base_y = dpy_height - win_height - margin_val;
 
     opposite_x = dpy_width - win_width - base_x;
     opposite_y = dpy_height - win_height - base_y;
 
-    if (opposite_x < 10) opposite_x = 10;
-    if (opposite_y < 10) opposite_y = 10;
-    if (opposite_x > dpy_width - win_width - 10) opposite_x = dpy_width - win_width - 10;
-    if (opposite_y > dpy_height - win_height - 10) opposite_y = dpy_height - win_height - 10;
+    if (opposite_x < margin_val) opposite_x = margin_val;
+    if (opposite_y < margin_val) opposite_y = margin_val;
+    if (opposite_x > dpy_width - win_width - margin_val) opposite_x = dpy_width - win_width - margin_val;
+    if (opposite_y > dpy_height - win_height - margin_val) opposite_y = dpy_height - win_height - margin_val;
 
     win = XCreateSimpleWindow(
         dpy, root,
@@ -341,7 +164,7 @@ int main(int argc, char **argv) {
     sh.flags = PMinSize | PMaxSize;
     XSetWMNormalHints(dpy, win, &sh);
 
-    XStoreName(dpy, win, "Particle");
+    XStoreName(dpy, win, "iblind");
     XMapWindow(dpy, win);
     XSelectInput(dpy, win, KeyPressMask | ExposureMask);
     XFlush(dpy);
@@ -544,20 +367,20 @@ int main(int argc, char **argv) {
             } else if (ev.xbutton.button == 3) {
                 int32_t mx = ev.xbutton.x_root - box_width / 2;
                 int32_t my = ev.xbutton.y_root - box_height / 2;
-                if (mx < 10) mx = 10;
-                if (my < 10) my = 10;
-                if (mx > dpy_width - win_width - 10) mx = dpy_width - win_width - 10;
-                if (my > dpy_height - win_height - 10) my = dpy_height - win_height - 10;
+                if (mx < margin_val) mx = margin_val;
+                if (my < margin_val) my = margin_val;
+                if (mx > dpy_width - win_width - margin_val) mx = dpy_width - win_width - margin_val;
+                if (my > dpy_height - win_height - margin_val) my = dpy_height - win_height - margin_val;
 
                 base_x = mx;
                 base_y = my;
                 opposite_x = dpy_width - win_width - base_x;
                 opposite_y = dpy_height - win_height - base_y;
 
-                if (opposite_x < 10) opposite_x = 10;
-                if (opposite_y < 10) opposite_y = 10;
-                if (opposite_x > dpy_width - win_width - 10) opposite_x = dpy_width - win_width - 10;
-                if (opposite_y > dpy_height - win_height - 10) opposite_y = dpy_height - win_height - 10;
+                if (opposite_x < margin_val) opposite_x = margin_val;
+                if (opposite_y < margin_val) opposite_y = margin_val;
+                if (opposite_x > dpy_width - win_width - margin_val) opposite_x = dpy_width - win_width - margin_val;
+                if (opposite_y > dpy_height - win_height - margin_val) opposite_y = dpy_height - win_height - margin_val;
 
                 shifted = false;
                 XMoveWindow(dpy, win, base_x, base_y);
