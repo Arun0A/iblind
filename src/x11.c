@@ -1,5 +1,6 @@
 #include "x11.h"
 #include <string.h>
+#include <stdbool.h>
 
 void grab_key(Display *dpy, Window root, KeySym keysym) {
     KeyCode code = XKeysymToKeycode(dpy, keysym);
