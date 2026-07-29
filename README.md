@@ -6,6 +6,45 @@ A lightweight screen magnifier for X11.
 
 ---
 
+## Build from source
+
+### Dependencies
+
+Ensure you have `libX11` and its development headers installed.
+
+### For Nix Systems
+
+Start a shell containing the build dependencies, then build:
+
+```bash
+nix-shell --run "make"
+```
+
+if you have flakes enabled, you may execute `iblind` directly without building manually:
+
+```bash
+nix run github:Arun0A/iblind
+```
+
+### For Non-Nix Systems
+
+If you have `make` installed:
+
+```bash
+make
+```
+
+Or, compile directly using `gcc`:
+
+```bash
+mkdir -p bin
+gcc -O2 -Wall -Isrc src/*.c -o bin/iblind -lX11
+```
+
+The compiled binary will be located at `bin/iblind`.
+
+---
+
 ## Keybindings
 
 #### Persist Mode (`-p`/`--persist`)
@@ -29,39 +68,6 @@ In Grab Mode, the pointer is grabbed globally, allowing focus-free mouse operati
 * **`Right-Click`**: Move magnifier window to mouse position
 * **`Scroll-Wheel Up/Down`**: Quick zoom adjustment
 * **`Q`** / **`Escape`** / **`Left-Click`**: Exit the application
-
----
-
-## Build from source
-
-### Dependencies
-
-Ensure you have `libX11` and its development headers installed.
-
-### For Nix Systems
-
-Start a shell containing the build dependencies, then build:
-
-```bash
-nix-shell --run "make"
-```
-
-### For Non-Nix Systems
-
-If you have `make` installed:
-
-```bash
-make
-```
-
-Or, compile directly using `gcc`:
-
-```bash
-mkdir -p bin
-gcc -O2 -Wall -Isrc src/*.c -o bin/iblind -lX11
-```
-
-The compiled binary will be located at `bin/iblind`.
 
 ---
 
