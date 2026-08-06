@@ -92,4 +92,4 @@ Options:
 
 ## Contributing
 
-Contributions are welcome! Feel free to open issues or submit pull requests for bug fixes, performance improvements, or new features.
+Contributions are welcome! Open issues or submit pull requests for bug fixes, performance improvements, or new features. AI generated PR's are **not encouraged**, unless used properly, however please consider mentioning if the code is written by AI.
